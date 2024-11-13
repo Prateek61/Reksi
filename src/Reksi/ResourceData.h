@@ -83,24 +83,24 @@ namespace Reksi
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			if (m_Status == ResourceStatus::NotLoaded) m_Status = ResourceStatus::Loading;
-			if (m_Status == ResourceStatus::Loading) is_loading = true;
-			if (m_Status == ResourceStatus::Loaded) return;
+			if ( m_Status == ResourceStatus::NotLoaded ) m_Status = ResourceStatus::Loading;
+			if ( m_Status == ResourceStatus::Loading ) is_loading = true;
+			if ( m_Status == ResourceStatus::Loaded ) return;
 		}
 
-		if (is_loading)
+		if ( is_loading )
 		{
 			// Wait for the resource to finish loading
-            while (true)
-            {
-	            {
+			while ( true )
+			{
+				{
 					RK_AUTO_LOCK_SCOPE
 
-					if (m_Status == ResourceStatus::Loaded) return;
-	            }
+					if ( m_Status == ResourceStatus::Loaded ) return;
+				}
 
 				std::this_thread::yield();
-            }
+			}
 		}
 
 		auto new_data = m_Loader(m_Path);

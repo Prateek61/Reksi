@@ -1,3 +1,3 @@
 # Reksi
 
-A super simple resource manager.
+A header only, thread-safe*, wannabe resource manager.

@@ -1,21 +1,23 @@
 #pragma once
 
-// A header only resource manager
-#include <unordered_map>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <cstdint>
-#include <filesystem>
-#include <functional>
-
-#define RK_THREAD_SAFE 1
-
-#ifndef RK_THREAD_SAFE
-#define RK_THREAD_SAFE 0
+// Flag to enable or disable custom smart pointer implementations, uses std::unique_ptr and std::shared_ptr by default
+#ifndef RK_CUSTOM_SP_IMPLEMENTATION
+#define RK_CUSTOM_SP_IMPLEMENTATION 0
 #endif
 
+// Flag to enable or disable custom mutex implementations, uses std::mutex by default
+#ifndef RK_CUSTOM_MUTEX_IMPLEMENTATION
+#define RK_CUSTOM_MUTEX_IMPLEMENTATION 0
+#endif
+
+// Thread Safety
+#ifndef RK_THREAD_SAFE
+#define RK_THREAD_SAFE 1
+#endif
+
+#if RK_CUSTOM_MUTEX_IMPLEMENTATION == 0
 #if RK_THREAD_SAFE
+#include <mutex>
 #define RK_AUTO_MUTEX std::mutex Mutex;
 #define RK_AUTO_LOCK_SCOPE std::lock_guard<std::mutex> lock(Mutex);
 #define RK_MUTEX(x) std::mutex x;
@@ -26,128 +28,99 @@
 #define RK_MUTEX(x)
 #define RK_LOCK_SCOPE(x)
 #endif
+#endif
+
+#if RK_CUSTOM_SP_IMPLEMENTATION == 0
+#include <memory>
 
 namespace Reksi
 {
-	// Memory stuff
+	// Unique Pointer
 	template <typename T>
-	using Scope = std::unique_ptr<T>;
+	using UniquePtr = std::unique_ptr<T>;
 
 	template <typename T, typename... Args>
-	constexpr Scope<T> CreateScope(Args&&... args)
+	constexpr UniquePtr<T> CreateUnique(Args&&... args)
 	{
 		return std::make_unique<T>(std::forward<Args>(args)...);
 	}
 
+	// Shared Pointer
 	template <typename T>
-	using Ref = std::shared_ptr<T>;
+	using SharedPtr = std::shared_ptr<T>;
 
 	template <typename T, typename... Args>
-	constexpr Ref<T> CreateRef(Args&&... args)
+	constexpr SharedPtr<T> CreateShared(Args&&... args)
 	{
 		return std::make_shared<T>(std::forward<Args>(args)...);
 	}
 
-	template <typename T1, typename T2>
-	constexpr Ref<T1> StaticRefCast(const Ref<T2>& ref)
+	// Static Pointer Cast
+	template <typename T, typename U>
+	constexpr SharedPtr<T> StaticSharedCast(const SharedPtr<U>& ptr)
 	{
-		return std::static_pointer_cast<T1>(ref);
+		return std::static_pointer_cast<T>(ptr);
 	}
+}
 
+#endif
+
+// If Mutex macros are not defined, error
+#if !defined(RK_AUTO_MUTEX) || !defined(RK_AUTO_LOCK_SCOPE) || !defined(RK_MUTEX) || !defined(RK_LOCK_SCOPE)
+#error "One or more Mutex macros are not defined, please define them in Base.h"
+#endif
+
+namespace Reksi
+{
+	// Forward Declaring ResourceManager
 	class ResourceManager;
-	using ResourceIDType = uint32_t;
+}
 
+#include <functional>
+#include <filesystem>
+#include <cstdint>
+#include <unordered_map>
+
+namespace Reksi
+{
 	enum class ResourceStatus
 	{
-		NotLoaded = 0,
+		NotLoaded,
 		Loading,
 		Loaded
 	};
 
-	struct ResourceData
-	{
-		using LoadFunc = std::function<Ref<void>(const std::filesystem::path&)>;
-
-		const std::filesystem::path Path;
-		Ref<void> Data;
-		ResourceStatus Status;
-		bool Reloading = false;
-		const LoadFunc Loader;
-
-		RK_AUTO_MUTEX
-
-		bool Reload();
-		void Load();
-		void Unload();
-		ResourceStatus GetStatus();
-		bool IsLoaded();
-		bool IsReloading();
-		template <typename T>
-		Ref<T> GetData();
-	};
-
-	// Resource Class
-	template <typename T>
-	class Resource
+	class ResourceData
 	{
 	public:
-		Ref<T> GetRef();
-
-		T& operator*();
-
-		ResourceStatus GetStatus();
-		bool IsLoaded();
-		bool IsReloading();
+		using LoaderFunc = std::function<SharedPtr<void>(const std::filesystem::path&)>;
 
 		bool Reload();
 		void Load();
 		void Unload();
-
-		std::filesystem::path GetPath() const;
-		ResourceData::LoadFunc GetLoader() const;
+		ResourceStatus GetStatus();
+		bool IsReloading();
+		bool IsLoaded();
+		template <typename T>
+		SharedPtr<T> GetData();
+		std::filesystem::path GetPath();
+		LoaderFunc GetLoader();
 
 	private:
-		Resource(ResourceIDType id, Ref<ResourceData> data)
-			: m_ID(id), m_Data(data)
-		{
-		}
+		ResourceData(std::filesystem::path path, LoaderFunc loader);
 
-		ResourceIDType m_ID;
-		Ref<ResourceData> m_Data;
+		std::filesystem::path m_Path;
+		LoaderFunc m_Loader;
+		SharedPtr<void> m_Data;
+		ResourceStatus m_Status;
+		bool m_Reloading;
+		RK_AUTO_MUTEX
 
 		friend class ResourceManager;
 	};
-
-	// ResourceManager Class
-	class ResourceManager
-	{
-	public:
-		ResourceManager() = default;
-		~ResourceManager() = default;
-
-		template <typename T>
-		Resource<T> GetResource(const std::filesystem::path& path, ResourceData::LoadFunc loader,
-		                        bool immediateLoad = false);
-		template <typename T>
-		Resource<T> GetResource(const std::filesystem::path& path, bool immediateLoad = false);
-		template <typename T>
-		Resource<T> GetResource(ResourceIDType id);
-
-		ResourceIDType GetMaxID() const { return m_CurrID - 1; }
-
-	private:
-		RK_AUTO_MUTEX
-
-		ResourceIDType m_CurrID = 1;
-		std::unordered_map<ResourceIDType, Ref<ResourceData>> m_Resources;
-		std::unordered_map<std::filesystem::path, uint32_t> m_ResourcePaths;
-
-		ResourceManager(const ResourceManager&) = delete;
-		ResourceManager(ResourceManager&&) = delete;
-	};
 }
 
-#pragma region definition
+// Implementation
 namespace Reksi
 {
 	inline bool ResourceData::Reload()
@@ -155,17 +128,19 @@ namespace Reksi
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			if ( Status == ResourceStatus::Loading || Reloading == true ) return false;
-			Reloading = true;
+			if ( m_Reloading || m_Status == ResourceStatus::Loading ) return false;
+			if ( m_Status == ResourceStatus::NotLoaded ) m_Status = ResourceStatus::Loading;
+			m_Reloading = true;
 		}
 
-		auto new_data = Loader(Path);
+		auto new_data = m_Loader(m_Path);
 
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			Data = new_data;
-			Reloading = false;
+			m_Data = new_data;
+			m_Status = ResourceStatus::Loaded;
+			m_Reloading = false;
 		}
 
 		return true;
@@ -173,20 +148,38 @@ namespace Reksi
 
 	inline void ResourceData::Load()
 	{
+		bool is_loading = false;
+
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			if ( Status != ResourceStatus::NotLoaded ) return;
-			Status = ResourceStatus::Loading;
+			if ( m_Status == ResourceStatus::NotLoaded ) m_Status = ResourceStatus::Loading;
+			if ( m_Status == ResourceStatus::Loading ) is_loading = true;
+			if ( m_Status == ResourceStatus::Loaded ) return;
 		}
 
-		auto new_data = Loader(Path);
+		if ( is_loading )
+		{
+			// Wait for the resource to finish loading
+			while ( true )
+			{
+				{
+					RK_AUTO_LOCK_SCOPE
+
+					if ( m_Status == ResourceStatus::Loaded ) return;
+				}
+
+				std::this_thread::yield();
+			}
+		}
+
+		auto new_data = m_Loader(m_Path);
 
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			Data = new_data;
-			Status = ResourceStatus::Loaded;
+			m_Data = new_data;
+			m_Status = ResourceStatus::Loaded;
 		}
 	}
 
@@ -194,39 +187,91 @@ namespace Reksi
 	{
 		RK_AUTO_LOCK_SCOPE
 
-		Data.reset();
+		m_Data.reset();
+		m_Status = ResourceStatus::NotLoaded;
 	}
 
 	inline ResourceStatus ResourceData::GetStatus()
 	{
 		RK_AUTO_LOCK_SCOPE
 
-		return Status;
-	}
-
-	inline bool ResourceData::IsLoaded()
-	{
-		RK_AUTO_LOCK_SCOPE
-
-		return Status == ResourceStatus::Loaded;
+		return m_Status;
 	}
 
 	inline bool ResourceData::IsReloading()
 	{
 		RK_AUTO_LOCK_SCOPE
 
-		return Reloading;
+		return m_Reloading;
 	}
 
-	template <typename T>
-	Ref<T> ResourceData::GetData()
+	inline bool ResourceData::IsLoaded()
 	{
 		RK_AUTO_LOCK_SCOPE
-		return StaticRefCast<T>(Data);
+
+		return m_Status == ResourceStatus::Loaded;
+	}
+
+	inline std::filesystem::path ResourceData::GetPath()
+	{
+		return m_Path;
+	}
+
+	inline ResourceData::LoaderFunc ResourceData::GetLoader()
+	{
+		return m_Loader;
 	}
 
 	template <typename T>
-	Ref<T> Resource<T>::GetRef()
+	SharedPtr<T> ResourceData::GetData()
+	{
+		RK_AUTO_LOCK_SCOPE
+
+		return StaticSharedCast<T>(m_Data);
+	}
+
+	inline ResourceData::ResourceData(std::filesystem::path path, LoaderFunc loader)
+		: m_Path(std::move(path)), m_Loader(std::move(loader)), m_Status(ResourceStatus::NotLoaded), m_Reloading(false)
+	{
+	}
+}
+
+namespace Reksi
+{
+	using ResourceHandleType = uint32_t;
+
+	template <typename T>
+	class Resource
+	{
+	public:
+		SharedPtr<T> GetRef();
+		T& operator*();
+
+		ResourceStatus GetStatus() const;
+		bool IsLoaded() const;
+		bool IsReloading() const;
+
+		bool Reload();
+		void Load();
+		void Unload();
+
+		std::filesystem::path GetPath() const;
+		ResourceData::LoaderFunc GetLoader() const;
+
+	private:
+		Resource(ResourceHandleType handle, const SharedPtr<ResourceData>& data);
+
+		ResourceHandleType m_Handle;
+		SharedPtr<ResourceData> m_Data;
+		friend class ResourceManager;
+	};
+}
+
+// Implementation
+namespace Reksi
+{
+	template <typename T>
+	SharedPtr<T> Resource<T>::GetRef()
 	{
 		return m_Data->GetData<T>();
 	}
@@ -234,23 +279,23 @@ namespace Reksi
 	template <typename T>
 	T& Resource<T>::operator*()
 	{
-		return *GetRef();
+		return *m_Data->GetData<T>();
 	}
 
 	template <typename T>
-	ResourceStatus Resource<T>::GetStatus()
+	ResourceStatus Resource<T>::GetStatus() const
 	{
 		return m_Data->GetStatus();
 	}
 
 	template <typename T>
-	bool Resource<T>::IsLoaded()
+	bool Resource<T>::IsLoaded() const
 	{
 		return m_Data->IsLoaded();
 	}
 
 	template <typename T>
-	bool Resource<T>::IsReloading()
+	bool Resource<T>::IsReloading() const
 	{
 		return m_Data->IsReloading();
 	}
@@ -276,112 +321,143 @@ namespace Reksi
 	template <typename T>
 	std::filesystem::path Resource<T>::GetPath() const
 	{
-		return m_Data->Path;
+		return m_Data->GetPath();
 	}
 
 	template <typename T>
-	ResourceData::LoadFunc Resource<T>::GetLoader() const
+	ResourceData::LoaderFunc Resource<T>::GetLoader() const
 	{
-		return m_Data->Loader;
+		return m_Data->GetLoader();
 	}
 
 	template <typename T>
-	Resource<T> ResourceManager::GetResource(const std::filesystem::path& path, ResourceData::LoadFunc loader,
+	Resource<T>::Resource(ResourceHandleType handle, const SharedPtr<ResourceData>& data)
+		: m_Handle(handle), m_Data(data)
+	{
+	}
+}
+
+namespace Reksi
+{
+	class ResourceManager
+	{
+	public:
+		ResourceManager();
+
+		template <typename T>
+		Resource<T> GetResource(const std::filesystem::path& path, const ResourceData::LoaderFunc& loader,
+		                        bool immediateLoad = false);
+		template <typename T>
+		Resource<T> GetResource(const std::filesystem::path& path, bool immediateLoad = false);
+		template <typename T>
+		Resource<T> GetResource(ResourceHandleType handle);
+
+	private:
+		ResourceHandleType m_CurrHandle;
+		std::unordered_map<ResourceHandleType, SharedPtr<ResourceData>> m_Resources;
+		std::unordered_map<std::filesystem::path, ResourceHandleType> m_ResourcePaths;
+		RK_AUTO_MUTEX
+	};
+}
+
+// Implementation
+namespace Reksi
+{
+	inline ResourceManager::ResourceManager()
+		: m_CurrHandle(1)
+	{
+	}
+
+	template <typename T>
+	Resource<T> ResourceManager::GetResource(const std::filesystem::path& path, const ResourceData::LoaderFunc& loader,
 	                                         bool immediateLoad)
 	{
-		ResourceIDType id = 0;
-
+		ResourceHandleType handle = 0;
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			auto it = m_ResourcePaths.find(path);
-			if ( it != m_ResourcePaths.end() )
+			auto itr = m_ResourcePaths.find(path);
+			if ( itr != m_ResourcePaths.end() )
 			{
-				id = it->second;
+				handle = itr->second;
 			}
 		}
 
-		if ( id ) return GetResource<T>(id);
+		if ( handle != 0 )
+		{
+			Resource<T> resource = GetResource<T>(handle);
 
-		// Create new resource
-		Ref<ResourceData> data = CreateRef<ResourceData>(ResourceData{
-			path, nullptr, ResourceStatus::NotLoaded, false, loader
-		});
+			if ( immediateLoad ) resource.Load();
+			return resource;
+		}
+
+		// Create new Resource Data
+		SharedPtr<ResourceData> data = CreateShared<ResourceData>(path, loader);
 
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			id = m_CurrID++;
-			// Add to resource paths
-			m_ResourcePaths[path] = id;
-			// Add to resources
-			m_Resources[id] = data;
+			handle = m_CurrHandle++;
+			m_Resources[handle] = data;
+			m_ResourcePaths[path] = handle;
 		}
 
-		if ( immediateLoad )
-		{
-			data->Load();
-		}
+		if ( immediateLoad ) data->Load();
 
-		return Resource<T>{id, data};
+		return Resource<T>{handle, data};
 	}
 
 	template <typename T>
 	Resource<T> ResourceManager::GetResource(const std::filesystem::path& path, bool immediateLoad)
 	{
-		ResourceIDType id = 0;
-
+		ResourceHandleType handle = 0;
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			auto it = m_ResourcePaths.find(path);
-			if ( it != m_ResourcePaths.end() )
+			auto itr = m_ResourcePaths.find(path);
+			if ( itr != m_ResourcePaths.end() )
 			{
-				id = it->second;
+				handle = itr->second;
 			}
 		}
 
-		if ( id ) return GetResource<T>(id);
-
-		// Use the constructor the T type to create a loader
-		ResourceData::LoadFunc loader = [](const std::filesystem::path& path) -> Ref<void>
+		if ( handle != 0 )
 		{
-			return CreateRef<T>(path);
+			Resource<T> resource = GetResource<T>(handle);
+
+			if ( immediateLoad ) resource.Load();
+			return resource;
+		}
+
+		// Check if the resource has a constructor that takes a path
+		static_assert(std::is_constructible_v<T, const std::filesystem::path&>,
+		              "Resource type must have a constructor that takes a const std::filesystem::path&");
+
+		// Use the constructor of the T type to create a loader
+		ResourceData::LoaderFunc loader = [path](const std::filesystem::path& p)
+		{
+			return CreateShared<T>(p);
 		};
-		// Create new resource
-		Ref<ResourceData> data = CreateRef<ResourceData>(ResourceData{
-			path, nullptr, ResourceStatus::NotLoaded, false, loader
-		});
+		// Create the resource
+		SharedPtr<ResourceData> data = CreateShared<ResourceData>(path, loader);
 
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			id = m_CurrID++;
-			// Add to resource paths
-			m_ResourcePaths[path] = id;
-			// Add to resources
-			m_Resources[id] = data;
+			handle = m_CurrHandle++;
+			m_Resources[handle] = data;
+			m_ResourcePaths[path] = handle;
 		}
 
-		return Resource<T>{id, data};
+		if ( immediateLoad ) data->Load();
+		return Resource<T>{handle, data};
 	}
 
 	template <typename T>
-	Resource<T> ResourceManager::GetResource(ResourceIDType id)
+	Resource<T> ResourceManager::GetResource(ResourceHandleType handle)
 	{
-		Ref<ResourceData> data;
+		RK_AUTO_LOCK_SCOPE
 
-		{
-			RK_AUTO_LOCK_SCOPE
-			auto it = m_Resources.find(id);
-			if ( it == m_Resources.end() )
-			{
-				return Resource<T>(0, nullptr);
-			}
-			data = it->second;
-		}
-
-		return Resource<T>{id, data};
+		return Resource<T>{handle, m_Resources[handle]};
 	}
 }
-#pragma endregion

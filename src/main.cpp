@@ -1,6 +1,9 @@
 #include <iostream>
 
-int main() {
-    std::cout << "Hello, World!" << std::endl;
-    return 0;
+#define LOG(x) std::cout << #x << ": " << (x) << "\n"
+#define LOGI(x) std::cout << #x << "\n"
+
+int main()
+{
+	LOGI(Hello);
 }

@@ -77,8 +77,8 @@ namespace Reksi
 		RK_AUTO_MUTEX
 
 		bool Reload();
-		bool Load();
-		bool Unload();
+		void Load();
+		void Unload();
 		ResourceStatus GetStatus();
 		bool IsLoaded();
 		bool IsReloading();
@@ -92,24 +92,25 @@ namespace Reksi
 	{
 	public:
 		Ref<T> GetRef();
-		const Ref<T> GetRef() const;
 
 		T& operator*();
-		const T& operator*() const;
 
 		ResourceStatus GetStatus();
 		bool IsLoaded();
 		bool IsReloading();
 
 		bool Reload();
-		bool Load();
-		bool Unload();
+		void Load();
+		void Unload();
 
 		std::filesystem::path GetPath() const;
 		ResourceData::LoadFunc GetLoader() const;
 
 	private:
-		Resource(ResourceIDType id, Ref<ResourceData> data);
+		Resource(ResourceIDType id, Ref<ResourceData> data)
+			: m_ID(id), m_Data(data)
+		{
+		}
 
 		ResourceIDType m_ID;
 		Ref<ResourceData> m_Data;
@@ -132,18 +133,158 @@ namespace Reksi
 		template <typename T>
 		Resource<T> GetResource(ResourceIDType id);
 
+		ResourceIDType GetMaxID() const { return m_CurrID - 1; }
+
 	private:
 		RK_AUTO_MUTEX
 
 		ResourceIDType m_CurrID = 1;
 		std::unordered_map<ResourceIDType, Ref<ResourceData>> m_Resources;
 		std::unordered_map<std::filesystem::path, uint32_t> m_ResourcePaths;
+
+		ResourceManager(const ResourceManager&) = delete;
+		ResourceManager(ResourceManager&&) = delete;
 	};
 }
 
 #pragma region definition
 namespace Reksi
 {
+	inline bool ResourceData::Reload()
+	{
+		{
+			RK_AUTO_LOCK_SCOPE
+
+			if ( Status == ResourceStatus::Loading || Reloading == true ) return false;
+			Reloading = true;
+		}
+
+		auto new_data = Loader(Path);
+
+		{
+			RK_AUTO_LOCK_SCOPE
+
+			Data = new_data;
+			Reloading = false;
+		}
+
+		return true;
+	}
+
+	inline void ResourceData::Load()
+	{
+		{
+			RK_AUTO_LOCK_SCOPE
+
+			if ( Status != ResourceStatus::NotLoaded ) return;
+			Status = ResourceStatus::Loading;
+		}
+
+		auto new_data = Loader(Path);
+
+		{
+			RK_AUTO_LOCK_SCOPE
+
+			Data = new_data;
+			Status = ResourceStatus::Loaded;
+		}
+	}
+
+	inline void ResourceData::Unload()
+	{
+		RK_AUTO_LOCK_SCOPE
+
+		Data.reset();
+	}
+
+	inline ResourceStatus ResourceData::GetStatus()
+	{
+		RK_AUTO_LOCK_SCOPE
+
+		return Status;
+	}
+
+	inline bool ResourceData::IsLoaded()
+	{
+		RK_AUTO_LOCK_SCOPE
+
+		return Status == ResourceStatus::Loaded;
+	}
+
+	inline bool ResourceData::IsReloading()
+	{
+		RK_AUTO_LOCK_SCOPE
+
+		return Reloading;
+	}
+
+	template <typename T>
+	Ref<T> ResourceData::GetData()
+	{
+		RK_AUTO_LOCK_SCOPE
+		return StaticRefCast<T>(Data);
+	}
+
+	template <typename T>
+	Ref<T> Resource<T>::GetRef()
+	{
+		return m_Data->GetData<T>();
+	}
+
+	template <typename T>
+	T& Resource<T>::operator*()
+	{
+		return *GetRef();
+	}
+
+	template <typename T>
+	ResourceStatus Resource<T>::GetStatus()
+	{
+		return m_Data->GetStatus();
+	}
+
+	template <typename T>
+	bool Resource<T>::IsLoaded()
+	{
+		return m_Data->IsLoaded();
+	}
+
+	template <typename T>
+	bool Resource<T>::IsReloading()
+	{
+		return m_Data->IsReloading();
+	}
+
+	template <typename T>
+	bool Resource<T>::Reload()
+	{
+		return m_Data->Reload();
+	}
+
+	template <typename T>
+	void Resource<T>::Load()
+	{
+		m_Data->Load();
+	}
+
+	template <typename T>
+	void Resource<T>::Unload()
+	{
+		m_Data->Unload();
+	}
+
+	template <typename T>
+	std::filesystem::path Resource<T>::GetPath() const
+	{
+		return m_Data->Path;
+	}
+
+	template <typename T>
+	ResourceData::LoadFunc Resource<T>::GetLoader() const
+	{
+		return m_Data->Loader;
+	}
+
 	template <typename T>
 	Resource<T> ResourceManager::GetResource(const std::filesystem::path& path, ResourceData::LoadFunc loader,
 	                                         bool immediateLoad)
@@ -237,7 +378,7 @@ namespace Reksi
 			{
 				return Resource<T>(0, nullptr);
 			}
-		    data = it->second;
+			data = it->second;
 		}
 
 		return Resource<T>{id, data};

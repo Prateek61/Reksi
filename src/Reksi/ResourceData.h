@@ -2,9 +2,6 @@
 
 #include "Reksi/Base.h"
 
-#include <functional>
-#include <filesystem>
-
 namespace Reksi
 {
 	// Forward Declaring ResourceManager
@@ -35,9 +32,10 @@ namespace Reksi
 		SharedPtr<T> GetData();
 		std::filesystem::path GetPath();
 		LoaderFunc GetLoader();
-
+		
 	private:
 		ResourceData(std::filesystem::path path, LoaderFunc loader);
+		ResourceData(const ResourceData&) = delete;
 
 		std::filesystem::path m_Path;
 		LoaderFunc m_Loader;
@@ -83,8 +81,8 @@ namespace Reksi
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			if ( m_Status == ResourceStatus::NotLoaded ) m_Status = ResourceStatus::Loading;
 			if ( m_Status == ResourceStatus::Loading ) is_loading = true;
+			if (m_Status == ResourceStatus::NotLoaded) m_Status = ResourceStatus::Loading;
 			if ( m_Status == ResourceStatus::Loaded ) return;
 		}
 

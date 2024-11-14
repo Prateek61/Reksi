@@ -4,9 +4,6 @@
 #include "Reksi/ResourceData.h"
 #include "Reksi/Resource.h"
 
-#include <unordered_map>
-#include <filesystem>
-
 namespace Reksi
 {
 	class ResourceManager
@@ -62,7 +59,7 @@ namespace Reksi
 		}
 
 		// Create new Resource Data
-		SharedPtr<ResourceData> data = CreateShared<ResourceData>(path, loader);
+		SharedPtr<ResourceData> data(new ResourceData(path, loader));
 
 		{
 			RK_AUTO_LOCK_SCOPE
@@ -109,7 +106,7 @@ namespace Reksi
 			return CreateShared<T>(p);
 		};
 		// Create the resource
-		SharedPtr<ResourceData> data = CreateShared<ResourceData>(path, loader);
+		SharedPtr<ResourceData> data(new ResourceData(path, loader));
 
 		{
 			RK_AUTO_LOCK_SCOPE

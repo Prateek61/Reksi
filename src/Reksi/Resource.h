@@ -3,8 +3,6 @@
 #include "Reksi/Base.h"
 #include "Reksi/ResourceData.h"
 
-#include <cstdint>
-
 // Forward Declaring ResourceManager
 namespace Reksi
 {

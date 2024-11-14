@@ -71,3 +71,10 @@ namespace Reksi
 #endif
 
 // TODO: If smart pointers are not defined, error
+
+// Include Files
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <filesystem>
+#include <functional>

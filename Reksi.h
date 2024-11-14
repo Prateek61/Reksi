@@ -1,5 +1,7 @@
 #pragma once
 
+// -------------- Start of Base.h----------------
+
 // Flag to enable or disable custom smart pointer implementations, uses std::unique_ptr and std::shared_ptr by default
 #ifndef RK_CUSTOM_SP_IMPLEMENTATION
 #define RK_CUSTOM_SP_IMPLEMENTATION 0
@@ -70,16 +72,26 @@ namespace Reksi
 #error "One or more Mutex macros are not defined, please define them in Base.h"
 #endif
 
+// TODO: If smart pointers are not defined, error
+
+// Include Files
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <filesystem>
+#include <functional>
+
+// -------------------- End of Base.h------------------
+
+
+// -------------- Start of ResourceData.h----------------
+
+
 namespace Reksi
 {
 	// Forward Declaring ResourceManager
 	class ResourceManager;
 }
-
-#include <functional>
-#include <filesystem>
-#include <cstdint>
-#include <unordered_map>
 
 namespace Reksi
 {
@@ -105,9 +117,10 @@ namespace Reksi
 		SharedPtr<T> GetData();
 		std::filesystem::path GetPath();
 		LoaderFunc GetLoader();
-
+		
 	private:
 		ResourceData(std::filesystem::path path, LoaderFunc loader);
+		ResourceData(const ResourceData&) = delete;
 
 		std::filesystem::path m_Path;
 		LoaderFunc m_Loader;
@@ -153,8 +166,8 @@ namespace Reksi
 		{
 			RK_AUTO_LOCK_SCOPE
 
-			if ( m_Status == ResourceStatus::NotLoaded ) m_Status = ResourceStatus::Loading;
 			if ( m_Status == ResourceStatus::Loading ) is_loading = true;
+			if (m_Status == ResourceStatus::NotLoaded) m_Status = ResourceStatus::Loading;
 			if ( m_Status == ResourceStatus::Loaded ) return;
 		}
 
@@ -234,6 +247,18 @@ namespace Reksi
 		: m_Path(std::move(path)), m_Loader(std::move(loader)), m_Status(ResourceStatus::NotLoaded), m_Reloading(false)
 	{
 	}
+}
+
+// -------------------- End of ResourceData.h------------------
+
+
+// -------------- Start of Resource.h----------------
+
+
+// Forward Declaring ResourceManager
+namespace Reksi
+{
+	class ResourceManager;
 }
 
 namespace Reksi
@@ -337,6 +362,12 @@ namespace Reksi
 	}
 }
 
+// -------------------- End of Resource.h------------------
+
+
+// -------------- Start of ResourceManager.h----------------
+
+
 namespace Reksi
 {
 	class ResourceManager
@@ -392,7 +423,7 @@ namespace Reksi
 		}
 
 		// Create new Resource Data
-		SharedPtr<ResourceData> data = CreateShared<ResourceData>(path, loader);
+		SharedPtr<ResourceData> data(new ResourceData(path, loader));
 
 		{
 			RK_AUTO_LOCK_SCOPE
@@ -439,7 +470,7 @@ namespace Reksi
 			return CreateShared<T>(p);
 		};
 		// Create the resource
-		SharedPtr<ResourceData> data = CreateShared<ResourceData>(path, loader);
+		SharedPtr<ResourceData> data(new ResourceData(path, loader));
 
 		{
 			RK_AUTO_LOCK_SCOPE
@@ -461,3 +492,6 @@ namespace Reksi
 		return Resource<T>{handle, m_Resources[handle]};
 	}
 }
+
+// -------------------- End of ResourceManager.h------------------
+

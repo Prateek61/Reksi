@@ -2,164 +2,108 @@
 
 #include "Reksi/Base.h"
 
-namespace Reksi
-{
-	// Forward Declaring ResourceManager
-	class ResourceManager;
-}
+// TODO: Use conditional variable
 
 namespace Reksi
 {
-	enum class ResourceStatus
+	class ResourceManager;
+	class ResourceData;
+
+	class ResourceStatus
 	{
-		NotLoaded,
-		Loading,
-		Loaded
+	public:
+		using StateT = uint32_t;
+
+		enum States : StateT
+		{
+			Loaded = 1,
+			Loading = 2,
+			Reloading = 4,
+			MarkedForUnload = 8,
+			Unloading = 16,
+			MarkedForReload = 32,
+			MarkedForDelete = 64
+		};
+		StateT State;
+
+		ResourceStatus() : State(0u) {}
+		ResourceStatus& SetState(States state);
+		bool IsState(States state) const;
+		void ClearState(States state);
 	};
+	enum class ResourceLoadStatus
+	{
+		Success,
+		Failure
+	};
+	enum class ResourceReloadStatus
+	{
+		Success,
+		Failure,
+		AlreadyLoading,
+		AlreadyReloading,
+		AlreadyUnloading
+	};
+	enum class ResourceUnloadStatus
+	{
+		Success,
+		Failure,
+		Loading
+	};
+	class ResourceListener
+	{
+	public:
+		ResourceListener() = default;
+		virtual ~ResourceListener() = default;
+
+		virtual void OnLoadComplete(ResourceData& data, ResourceLoadStatus status) {}
+		virtual void OnUnloadComplete(ResourceData& data, ResourceUnloadStatus status) {}
+		virtual void OnReloadComplete(ResourceData& data, ResourceReloadStatus status) {}
+		virtual void BeforeDeleting(ResourceData& data) {}
+	};
+
+	using ResourceLoadFunc = std::function<SharedPtr<void>(const std::filesystem::path&)>;
 
 	class ResourceData
 	{
 	public:
-		using LoaderFunc = std::function<SharedPtr<void>(const std::filesystem::path&)>;
+		using ListenerList = std::list<ResourceListener*>;
 
-		bool Reload();
-		void Load();
-		void Unload();
-		ResourceStatus GetStatus();
-		bool IsReloading();
-		bool IsLoaded();
+		ResourceStatus::StateT GetState();
+		bool IsState(ResourceStatus::States state);
+		ResourceLoadStatus Load();
+		ResourceUnloadStatus Unload();
+		ResourceReloadStatus Reload();
 		template <typename T>
 		SharedPtr<T> GetData();
-		std::filesystem::path GetPath();
-		LoaderFunc GetLoader();
+		void AddListener(ResourceListener* listener);
+		void RemoveListener(ResourceListener* listener);
+		std::filesystem::path GetPath() const;
+		ResourceLoadFunc GetLoader() const;
 		
 	private:
-		ResourceData(std::filesystem::path path, LoaderFunc loader);
-		ResourceData(const ResourceData&) = delete;
-
-		std::filesystem::path m_Path;
-		LoaderFunc m_Loader;
-		SharedPtr<void> m_Data;
 		ResourceStatus m_Status;
-		bool m_Reloading;
-		RK_AUTO_MUTEX
+		std::filesystem::path m_Path;
+		ResourceLoadFunc m_Loader;
+		SharedPtr<void> m_Data;
+		ListenerList m_Listeners;
+		ResourceManager* m_Creator;
+
+		REKSI_AUTO_MUTEX
+
+	private:
+		void ListenersOnLoadComplete(ResourceData* data, ResourceLoadStatus status);
+		void ListenersOnUnloadComplete(ResourceData* data, ResourceUnloadStatus status);
+		void ListenersOnReloadComplete(ResourceData* data, ResourceReloadStatus status);
+		void ListenersBeforeDeleting(ResourceData* data);
+
+		// Just perform load without notifying listeners
+		ResourceLoadStatus LoadInternal();
+		// Just perform unload without notifying listeners
+		ResourceUnloadStatus UnloadInternal();
+		// Just perform reload without notifying listeners
+		ResourceReloadStatus ReloadInternal();
 
 		friend class ResourceManager;
 	};
-}
-
-// Implementation
-namespace Reksi
-{
-	inline bool ResourceData::Reload()
-	{
-		{
-			RK_AUTO_LOCK_SCOPE
-
-			if ( m_Reloading || m_Status == ResourceStatus::Loading ) return false;
-			if ( m_Status == ResourceStatus::NotLoaded ) m_Status = ResourceStatus::Loading;
-			m_Reloading = true;
-		}
-
-		auto new_data = m_Loader(m_Path);
-
-		{
-			RK_AUTO_LOCK_SCOPE
-
-			m_Data = new_data;
-			m_Status = ResourceStatus::Loaded;
-			m_Reloading = false;
-		}
-
-		return true;
-	}
-
-	inline void ResourceData::Load()
-	{
-		bool is_loading = false;
-
-		{
-			RK_AUTO_LOCK_SCOPE
-
-			if ( m_Status == ResourceStatus::Loading ) is_loading = true;
-			if (m_Status == ResourceStatus::NotLoaded) m_Status = ResourceStatus::Loading;
-			if ( m_Status == ResourceStatus::Loaded ) return;
-		}
-
-		if ( is_loading )
-		{
-			// Wait for the resource to finish loading
-			while ( true )
-			{
-				{
-					RK_AUTO_LOCK_SCOPE
-
-					if ( m_Status == ResourceStatus::Loaded ) return;
-				}
-
-				std::this_thread::yield();
-			}
-		}
-
-		auto new_data = m_Loader(m_Path);
-
-		{
-			RK_AUTO_LOCK_SCOPE
-
-			m_Data = new_data;
-			m_Status = ResourceStatus::Loaded;
-		}
-	}
-
-	inline void ResourceData::Unload()
-	{
-		RK_AUTO_LOCK_SCOPE
-
-		m_Data.reset();
-		m_Status = ResourceStatus::NotLoaded;
-	}
-
-	inline ResourceStatus ResourceData::GetStatus()
-	{
-		RK_AUTO_LOCK_SCOPE
-
-		return m_Status;
-	}
-
-	inline bool ResourceData::IsReloading()
-	{
-		RK_AUTO_LOCK_SCOPE
-
-		return m_Reloading;
-	}
-
-	inline bool ResourceData::IsLoaded()
-	{
-		RK_AUTO_LOCK_SCOPE
-
-		return m_Status == ResourceStatus::Loaded;
-	}
-
-	inline std::filesystem::path ResourceData::GetPath()
-	{
-		return m_Path;
-	}
-
-	inline ResourceData::LoaderFunc ResourceData::GetLoader()
-	{
-		return m_Loader;
-	}
-
-	template <typename T>
-	SharedPtr<T> ResourceData::GetData()
-	{
-		RK_AUTO_LOCK_SCOPE
-
-		return StaticSharedCast<T>(m_Data);
-	}
-
-	inline ResourceData::ResourceData(std::filesystem::path path, LoaderFunc loader)
-		: m_Path(std::move(path)), m_Loader(std::move(loader)), m_Status(ResourceStatus::NotLoaded), m_Reloading(false)
-	{
-	}
 }

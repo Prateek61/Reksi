@@ -20,7 +20,6 @@ namespace Reksi
 		{
 			Loaded = RK_BIT(0),
 			Loading = RK_BIT(1),
-			Reloading = RK_BIT(2),
 			MarkedForReload = RK_BIT(3),
 			MarkedForDelete = RK_BIT(4)
 		};
@@ -32,28 +31,30 @@ namespace Reksi
 		{
 		}
 
-		ResourceStatus& SetState(States state);
-		bool IsState(States state) const;
-		ResourceStatus& ClearState(States state);
+		ResourceStatus& Set(States state);
+		bool Is(States state) const;
+		ResourceStatus& Clear(States state);
 	};
 
-	enum class ResourceLoadStatus
+	class ResourceLoadStatus
 	{
-		Success,
-		Failure,
-		WaitedForLoad,
-		AlreadyLoaded,
-		MarkedForDelete
-	};
+	public:
+		using StateT = uint32_t;
 
-	enum class ResourceReloadStatus
-	{
-		Success,
-		Failure,
-		AlreadyLoading,
-		AlreadyReloading,
-		MarkedForDelete,
-		CalledLoadInstead
+		enum States : StateT
+		{
+			Success = RK_BIT(0),
+			Reloaded = RK_BIT(1),
+			WaitedForLoad = RK_BIT(2),
+			MarkedForDelete = RK_BIT(3),
+			AlreadyReloading = RK_BIT(4),
+		};
+
+		StateT State;
+
+		ResourceLoadStatus& Set(States state);
+		bool Is(States state) const;
+		ResourceLoadStatus& Clear(States state);
 	};
 
 	enum class ResourceUnloadStatus
@@ -77,10 +78,6 @@ namespace Reksi
 		{
 		}
 
-		virtual void OnReloadComplete(ResourceData& data, ResourceReloadStatus status)
-		{
-		}
-
 		virtual void BeforeDeleting(ResourceData& data)
 		{
 		}
@@ -101,7 +98,6 @@ namespace Reksi
 		bool IsState(ResourceStatus::States state) const;
 		ResourceLoadStatus Load();
 		ResourceUnloadStatus Unload();
-		ResourceReloadStatus Reload();
 		template <typename T>
 		SharedPtr<T> GetData();
 		void AddListener(ResourceListener* listener);
@@ -113,6 +109,10 @@ namespace Reksi
 		ResourceHandleT GetHandle() const;
 
 	private:
+		using RLS = ResourceLoadStatus;
+		using RS = ResourceStatus;
+		using RUS = ResourceUnloadStatus;
+
 		ResourceData(ResourceHandleT handle, std::filesystem::path path, ResourceLoadFunc loader,
 		             ResourceManager* creator);
 
@@ -127,7 +127,6 @@ namespace Reksi
 		ListenerList GetListenersCopy() const;
 		void NotifyListenersOnLoadComplete(ResourceLoadStatus status);
 		void NotifyListenersOnUnloadComplete(ResourceUnloadStatus status);
-		void NotifyListenersOnReloadComplete(ResourceReloadStatus status);
 		void NotifyListenersBeforeDeleting();
 
 		void SetState(ResourceStatus::States state);
@@ -142,8 +141,6 @@ namespace Reksi
 		ResourceLoadStatus LoadInternal();
 		// Just perform unload without notifying listeners or the manager
 		ResourceUnloadStatus UnloadInternal();
-		// Just perform reload without notifying listeners or the manager
-		ResourceReloadStatus ReloadInternal();
 
 		friend class ResourceManager;
 	};
@@ -173,7 +170,7 @@ namespace Reksi
 	inline ResourceLoadStatus ResourceData::Load()
 	{
 		// Internal Load
-		const ResourceLoadStatus status = LoadInternal();
+		const RLS status = LoadInternal();
 		// Notify listeners
 		NotifyListenersOnLoadComplete(status);
 
@@ -196,19 +193,6 @@ namespace Reksi
 		return status;
 	}
 
-	inline ResourceReloadStatus ResourceData::Reload()
-	{
-		// Internal Reload
-		const ResourceReloadStatus status = ReloadInternal();
-		// Notify listeners
-		NotifyListenersOnReloadComplete(status);
-
-		// TODO: Notify the resource manager as well
-
-		// Return status
-		return status;
-	}
-
 	template <typename T>
 	SharedPtr<T> ResourceData::GetData()
 	{
@@ -216,18 +200,13 @@ namespace Reksi
 			// If data is loaded, return it
 			REKSI_LOCK_SHARED_AUTO;
 
-			if ( m_Status.IsState(ResourceStatus::Loaded) )
+			if ( m_Status.Is(ResourceStatus::Loaded) )
 			{
 				return GetDataInternal<T>();
 			}
 		}
 
 		auto status = Load();
-		if ( status == ResourceLoadStatus::Failure )
-		{
-			// TODO: Log error and return default data, maybe from the resource manager if it is available
-			return nullptr;
-		}
 
 		{
 			// Return the data
@@ -326,13 +305,6 @@ namespace Reksi
 		}
 	}
 
-	inline void ResourceData::NotifyListenersOnReloadComplete(ResourceReloadStatus status)
-	{
-		for ( const auto listener : GetListenersCopy() )
-		{
-			listener->OnReloadComplete(*this, status);
-		}
-	}
 
 	inline void ResourceData::NotifyListenersBeforeDeleting()
 	{
@@ -346,62 +318,80 @@ namespace Reksi
 	{
 		REKSI_LOCK_SHARED_AUTO;
 
-		m_Status.SetState(state);
+		m_Status.Set(state);
 	}
 
 	inline void ResourceData::ClearState(ResourceStatus::States state)
 	{
 		REKSI_LOCK_SHARED_AUTO;
 
-		m_Status.ClearState(state);
+		m_Status.Clear(state);
 	}
 
+	/*
+	 * If not loaded, goes ahead and loads the resource
+	 * If loading on another thread, waits for the load to complete
+	 * If already loaded, reloads the resource
+	 * If reloading on another thread, returns immediately
+	 */
 	inline ResourceLoadStatus ResourceData::LoadInternal()
 	{
 		std::filesystem::path res_path;
-
-		{
-			REKSI_LOCK_SHARED_AUTO;
-
-			// Resource is marked for delete
-			if (m_Status.IsState(ResourceStatus::MarkedForDelete))
-			{
-				return ResourceLoadStatus::MarkedForDelete;
-			}
-			// Resource is already loaded
-			if (m_Status.IsState(ResourceStatus::Loaded))
-			{
-				return ResourceLoadStatus::AlreadyLoaded;
-			}
-			// Resource is loading
-			if (m_Status.IsState(ResourceStatus::Loading))
-			{
-				// Wait for load to complete and return
-				REKSI_CV_WAIT_AUTO([&] { return !m_Status.IsState(ResourceStatus::Loading); });
-				return ResourceLoadStatus::WaitedForLoad;
-			}
-			// Resource is not loaded
-			res_path = m_Path;
-			m_Status.SetState(ResourceStatus::Loading);
-		}
-
-		// Load the resource outside the lock
-		auto data = m_Loader(res_path);
+		RLS out;
 
 		{
 			REKSI_LOCK_UNIQUE_AUTO;
 
-			// In case of loading failure, clear the loading state
-			if (!data)
+			// Resource is marked for delete
+			if (m_Status.Is(RS::MarkedForDelete))
 			{
-				m_Status.ClearState(ResourceStatus::Loading);
-				return ResourceLoadStatus::Failure;
+				return out.Set(RLS::MarkedForDelete);
+			}
+			// Resource is previously not loaded and loading, wait for load to complete
+			if (!m_Status.Is(RS::Loaded) && m_Status.Is(RS::Loading))
+			{
+				REKSI_CV_WAIT_AUTO([&] { return m_Status.Is(RS::Loaded); });
+				return out.Set(RLS::WaitedForLoad);
+			}
+			// Resource is previously loaded and loading, return already reloading
+			if (m_Status.Is(RS::Loaded) && m_Status.Is(RS::Loading))
+			{
+				return out.Set(RLS::AlreadyReloading).Set(RLS::Reloaded);
 			}
 
-			m_Data = data;
-			m_Status.ClearState(ResourceStatus::Loading).SetState(ResourceStatus::Loaded);
-			return ResourceLoadStatus::Success;
+			// If already loaded
+			if (m_Status.Is(RS::Loaded))
+			{
+				out.Set(RLS::Reloaded);
+			}
+			m_Status.Set(RS::Loading).Clear(RS::MarkedForReload);
+			res_path = m_Path;
 		}
+
+		// Load the resource
+		const auto data = m_Loader(res_path);
+
+		{
+			REKSI_LOCK_UNIQUE_AUTO;
+
+			m_Status.Clear(RS::Loading);
+
+			// In case of load failure, clear the loading state
+			if (data)
+			{
+				m_Data = data;
+				m_Status.Set(RS::Loaded);
+				out.Set(RLS::Success);
+			}
+		}
+
+		// Loading is complete, send Condition Variable signal
+		if (!out.Is(RLS::Reloaded))
+		{
+			REKSI_CV_NOTIFY_ALL_AUTO;
+		}
+
+		return out;
 	}
 
 	inline ResourceUnloadStatus ResourceData::UnloadInternal()
@@ -409,89 +399,41 @@ namespace Reksi
 		REKSI_LOCK_UNIQUE_AUTO;
 
 		m_Data.reset();
-		m_Status.ClearState(ResourceStatus::Loaded);
+		m_Status.Clear(ResourceStatus::Loaded);
 		return ResourceUnloadStatus::Success;
 	}
 
-	inline ResourceReloadStatus ResourceData::ReloadInternal()
-	{
-		std::filesystem::path file_path;
-		bool call_load = false;
-
-		{
-			REKSI_LOCK_UNIQUE_AUTO;
-
-			if (m_Status.IsState(ResourceStatus::MarkedForDelete))
-			{
-				m_Status.ClearState(ResourceStatus::MarkedForReload);
-				return ResourceReloadStatus::MarkedForDelete;
-			}
-			if (m_Status.IsState(ResourceStatus::Reloading))
-			{
-				return ResourceReloadStatus::AlreadyReloading;
-			}
-			if (m_Status.IsState(ResourceStatus::Loading))
-			{
-				return ResourceReloadStatus::AlreadyLoading;
-			}
-			// Resource is not currently loaded, so call load instead
-			if (!m_Status.IsState(ResourceStatus::Loaded))
-			{
-				call_load = true;
-			}
-			else
-			{
-				file_path = m_Path;
-			}
-			m_Status.ClearState(ResourceStatus::MarkedForReload).SetState(ResourceStatus::Reloading);
-		}
-
-		if (call_load)
-		{
-			auto load_status = Load();
-
-			{
-				REKSI_LOCK_UNIQUE_AUTO;
-				m_Status.ClearState(ResourceStatus::Reloading);
-			}
-
-			return ResourceReloadStatus::CalledLoadInstead;
-		}
-
-		// Load the new data
-		auto new_data = m_Loader(file_path);
-
-		{
-			REKSI_LOCK_UNIQUE_AUTO;
-
-			m_Status.ClearState(ResourceStatus::Reloading);
-
-			// If loaded data is not valid, don't reset previous data
-			if (!new_data)
-			{
-				return ResourceReloadStatus::Failure;
-			}
-
-			m_Data = new_data;
-			return ResourceReloadStatus::Success;
-		}
-	}
-
-	inline ResourceStatus& ResourceStatus::SetState(States state)
+	inline ResourceStatus& ResourceStatus::Set(States state)
 	{
 		State |= state;
 		return *this;
 	}
 
-	inline bool ResourceStatus::IsState(States state) const
+	inline bool ResourceStatus::Is(States state) const
 	{
 		return static_cast<bool>(this->State & state);
 	}
 
-	inline ResourceStatus& ResourceStatus::ClearState(States state)
+	inline ResourceStatus& ResourceStatus::Clear(States state)
 	{
 		State &= ~state;
 		return *this;
 	}
 
+	inline ResourceLoadStatus& ResourceLoadStatus::Set(States state)
+	{
+		State |= state;
+		return *this;
+	}
+
+	inline bool ResourceLoadStatus::Is(States state) const
+	{
+		return static_cast<bool>(this->State & state);
+	}
+
+	inline ResourceLoadStatus& ResourceLoadStatus::Clear(States state)
+	{
+		State &= ~state;
+		return *this;
+	}
 }

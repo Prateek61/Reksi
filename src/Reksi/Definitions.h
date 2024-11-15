@@ -24,17 +24,15 @@
 #if REKSI_THREADING == 1
 // Mutexes
 #include <shared_mutex>
-#include <mutex>
 #define REKSI_THREADING_MUTABLE mutable
-using REKSI_MUTEX_T = std::mutex;
-using REKSI_SMUTEX_T = std::shared_mutex;
-#define REKSI_MUT_IMPL(Mutex) REKSI_MUTEX_T Mutex;
-#define REKSI_SMUT_IMPL(Mutex) REKSI_SMUTEX_T Mutex;
-#define REKSI_LOCK_SHARED_IMPL(Mutex, Lock) std::shared_lock Lock(Mutex);
-#define REKSI_LOCK_UNIQUE_IMPL(Mutex, Lock) std::unique_lock Lock(Mutex);
-#define REKSI_LOCK_IMPL(Mutex, Lock) std::lock_guard Lock(Mutex);
+using REKSI_MUTEX_T = std::shared_mutex;
+#define REKSI_MUT_IMPL(Mutex) REKSI_MUTEX_T Mutex
+#define REKSI_LOCK_SHARED_IMPL(Mutex, Lock) std::shared_lock Lock(Mutex)
+#define REKSI_LOCK_UNIQUE_IMPL(Mutex, Lock) std::unique_lock Lock(Mutex)
+#define REKSI_LOCK_IMPL(Mutex, Lock) std::lock_guard Lock(Mutex)
 // Conditional Variables
-using REKSI_CV_T = std::condition_variable;
+#include <condition_variable>
+using REKSI_CV_T = std::condition_variable_any;
 #define REKSI_CV_IMPL(CV) REKSI_CV_T CV
 #define REKSI_CV_WAIT_IMPL(CV, Lock, Condition) CV.wait(Lock, Condition)
 #define REKSI_CV_NOTIFY_ONE_IMPL(CV) CV.notify_one()
@@ -56,7 +54,6 @@ using REKSI_CV_T = std::condition_variable;
  * Definition of All Thread Synchronization Macros
  */
 #define REKSI_MUTEX(Mutex) REKSI_MUT_IMPL(Mutex)
-#define REKSI_MUTEX_S(Mutex) REKSI_SMUT_IMPL(Mutex)
 #define REKSI_LOCK_SHARED(Mutex, Lock) REKSI_LOCK_SHARED_IMPL(Mutex, Lock)
 #define REKSI_LOCK_UNIQUE(Mutex, Lock) REKSI_LOCK_UNIQUE_IMPL(Mutex, Lock)
 #define REKSI_LOCK(Mutex, Lock) REKSI_LOCK_IMPL(Mutex, Lock)
@@ -64,7 +61,6 @@ using REKSI_CV_T = std::condition_variable;
 #define REKSI_MUTEX_AUTO_NAME RkAutoMutex
 #define REKSI_LOCK_AUTO_NAME RkAutoLock
 #define REKSI_MUTEX_AUTO REKSI_MUTEX(REKSI_MUTEX_AUTO_NAME)
-#define REKSI_MUTEX_S_AUTO REKSI_MUTEX_S(REKSI_MUTEX_AUTO_NAME)
 #define REKSI_LOCK_SHARED_AUTO REKSI_LOCK_SHARED(REKSI_MUTEX_AUTO_NAME, REKSI_LOCK_AUTO_NAME)
 #define REKSI_LOCK_UNIQUE_AUTO REKSI_LOCK_UNIQUE(REKSI_MUTEX_AUTO_NAME, REKSI_LOCK_AUTO_NAME)
 #define REKSI_LOCK_AUTO REKSI_LOCK(REKSI_MUTEX_AUTO_NAME, REKSI_LOCK_AUTO_NAME)

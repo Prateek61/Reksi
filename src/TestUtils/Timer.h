@@ -2,7 +2,7 @@
 
 #include <chrono>
 #include <iostream>
-#include <mutex>
+#include <shared_mutex>
 
 class Timer
 {
@@ -34,16 +34,16 @@ public:
 class TimerThread : public Timer
 {
 public:
-	std::mutex& mutex;
+	std::shared_mutex& mutex;
 
-	TimerThread(const std::string& name, std::mutex& mutex)
+	TimerThread(const std::string& name, std::shared_mutex& mutex)
 		: Timer(name), mutex(mutex)
 	{
 	}
 
 	void Stop()
 	{
-		std::lock_guard<std::mutex> lock(mutex);
+		std::lock_guard<std::shared_mutex> lock(mutex);
 		Timer::Stop();
 	}
 };

@@ -6,11 +6,10 @@
 
 namespace Reksi
 {
-	class ResourceManager;
+	// Forward Declaration
 	class ResourceData;
 
 	using ResourceHandleT = uint32_t;
-
 	class ResourceStatus
 	{
 	public:
@@ -50,6 +49,11 @@ namespace Reksi
 			AlreadyReloading = RK_BIT(4),
 		};
 
+		ResourceLoadStatus()
+			: State(0u)
+		{
+		}
+
 		StateT State;
 
 		ResourceLoadStatus& Set(States state);
@@ -83,7 +87,8 @@ namespace Reksi
 		}
 	};
 
-	using ResourceLoadFunc = std::function<SharedPtr<void>(const std::filesystem::path&)>;
+	template <typename T>
+	using ResourceLoadFunc = std::function<SharedPtr<T>(const std::filesystem::path&)>;
 
 	class ResourceData
 	{
@@ -91,10 +96,10 @@ namespace Reksi
 		using ListenerList = std::list<ResourceListener*>;
 
 		// Public for external use
-		REKSI_MUTEX_AUTO;
+		REKSI_THREADING_MUTABLE REKSI_MUTEX_AUTO;
 		REKSI_CV_AUTO;
 
-		ResourceStatus::StateT GetState() const;
+		ResourceStatus GetStatus() const;
 		bool IsState(ResourceStatus::States state) const;
 		ResourceLoadStatus Load();
 		ResourceUnloadStatus Unload();
@@ -104,25 +109,32 @@ namespace Reksi
 		void RemoveListener(ResourceListener* listener);
 		void ClearListeners();
 		void AddListeners(const ListenerList& listeners);
+		void WaitUntilCurrentLoading();
 		std::filesystem::path GetPath() const;
-		ResourceLoadFunc GetLoader() const;
+		template <typename T>
+		ResourceLoadFunc<T> GetLoader() const;
 		ResourceHandleT GetHandle() const;
+		std::type_index GetTypeIndex() const;
+
+		~ResourceData();
 
 	private:
+		using LoadFunc = std::function<SharedPtr<void>(const std::filesystem::path&)>;
 		using RLS = ResourceLoadStatus;
 		using RS = ResourceStatus;
 		using RUS = ResourceUnloadStatus;
 
-		ResourceData(ResourceHandleT handle, std::filesystem::path path, ResourceLoadFunc loader,
-		             ResourceManager* creator);
+		ResourceData(ResourceHandleT handle, std::filesystem::path path, LoadFunc loader,
+		             ResourceManager* creator, std::type_index typeIndex);
 
 		ResourceHandleT m_Handle;
 		ResourceStatus m_Status;
 		std::filesystem::path m_Path;
-		ResourceLoadFunc m_Loader;
+		LoadFunc m_Loader;
 		SharedPtr<void> m_Data;
 		ListenerList m_Listeners;
 		ResourceManager* m_Creator;
+		const std::type_index m_TypeIndex;
 
 		ListenerList GetListenersCopy() const;
 		void NotifyListenersOnLoadComplete(ResourceLoadStatus status);
@@ -146,19 +158,24 @@ namespace Reksi
 	};
 }
 
+#pragma region Defer
 // Implementation
 namespace Reksi
 {
-	inline ResourceData::ResourceData(ResourceHandleT handle, std::filesystem::path path, ResourceLoadFunc loader,
-	                                  ResourceManager* creator)
-		: m_Handle(handle), m_Path(std::move(path)), m_Loader(std::move(loader)), m_Creator(creator)
+	inline ResourceData::ResourceData(ResourceHandleT handle, std::filesystem::path path, LoadFunc loader,
+	                                  ResourceManager* creator, std::type_index typeIndex)
+		: m_Handle(handle),
+		  m_Path(std::move(path)),
+		  m_Loader(std::move(loader)),
+		  m_Creator(creator),
+		  m_TypeIndex(typeIndex)
 	{
 	}
 
-	inline ResourceStatus::StateT ResourceData::GetState() const
+	inline ResourceStatus ResourceData::GetStatus() const
 	{
 		REKSI_LOCK_SHARED_AUTO;
-		return m_Status.State;
+		return m_Status;
 	}
 
 	inline bool ResourceData::IsState(ResourceStatus::States state) const
@@ -219,9 +236,10 @@ namespace Reksi
 	template <typename T>
 	SharedPtr<T> ResourceData::GetDataInternal()
 	{
-		DEBUG_ONLY(
-			return DynamicSharedCast<T>(m_Data);
-		)
+		if ( m_TypeIndex != typeid(T) )
+		{
+			throw std::runtime_error("ResourceData::GetDataInternal: Type mismatch");
+		}
 
 		return StaticSharedCast<T>(m_Data);
 	}
@@ -254,6 +272,13 @@ namespace Reksi
 		m_Listeners.insert(m_Listeners.end(), listeners.begin(), listeners.end());
 	}
 
+	inline void ResourceData::WaitUntilCurrentLoading()
+	{
+		REKSI_LOCK_UNIQUE_AUTO;
+
+		REKSI_CV_WAIT_AUTO([&] { return !m_Status.Is(ResourceStatus::Loading); });
+	}
+
 	inline std::filesystem::path ResourceData::GetPath() const
 	{
 		REKSI_LOCK_SHARED_AUTO;
@@ -261,7 +286,8 @@ namespace Reksi
 		return m_Path;
 	}
 
-	inline ResourceLoadFunc ResourceData::GetLoader() const
+	template <typename T>
+	ResourceLoadFunc<T> ResourceData::GetLoader() const
 	{
 		REKSI_LOCK_SHARED_AUTO;
 
@@ -273,6 +299,20 @@ namespace Reksi
 		REKSI_LOCK_SHARED_AUTO;
 
 		return m_Handle;
+	}
+
+	inline std::type_index ResourceData::GetTypeIndex() const
+	{
+		return m_TypeIndex;
+	}
+
+	inline ResourceData::~ResourceData()
+	{
+		NotifyListenersBeforeDeleting();
+
+		REKSI_LOCK_UNIQUE_AUTO;
+		m_Status.Set(RS::MarkedForDelete).Clear(RS::MarkedForReload);
+		REKSI_CV_WAIT_AUTO([&] { return !m_Status.Is(ResourceStatus::Loading); });
 	}
 
 	inline ResourceData::ListenerList ResourceData::GetListenersCopy() const
@@ -343,24 +383,24 @@ namespace Reksi
 			REKSI_LOCK_UNIQUE_AUTO;
 
 			// Resource is marked for delete
-			if (m_Status.Is(RS::MarkedForDelete))
+			if ( m_Status.Is(RS::MarkedForDelete) )
 			{
 				return out.Set(RLS::MarkedForDelete);
 			}
 			// Resource is previously not loaded and loading, wait for load to complete
-			if (!m_Status.Is(RS::Loaded) && m_Status.Is(RS::Loading))
+			if ( !m_Status.Is(RS::Loaded) && m_Status.Is(RS::Loading) )
 			{
 				REKSI_CV_WAIT_AUTO([&] { return m_Status.Is(RS::Loaded); });
 				return out.Set(RLS::WaitedForLoad);
 			}
 			// Resource is previously loaded and loading, return already reloading
-			if (m_Status.Is(RS::Loaded) && m_Status.Is(RS::Loading))
+			if ( m_Status.Is(RS::Loaded) && m_Status.Is(RS::Loading) )
 			{
 				return out.Set(RLS::AlreadyReloading).Set(RLS::Reloaded);
 			}
 
 			// If already loaded
-			if (m_Status.Is(RS::Loaded))
+			if ( m_Status.Is(RS::Loaded) )
 			{
 				out.Set(RLS::Reloaded);
 			}
@@ -377,7 +417,7 @@ namespace Reksi
 			m_Status.Clear(RS::Loading);
 
 			// In case of load failure, clear the loading state
-			if (data)
+			if ( data )
 			{
 				m_Data = data;
 				m_Status.Set(RS::Loaded);
@@ -386,10 +426,7 @@ namespace Reksi
 		}
 
 		// Loading is complete, send Condition Variable signal
-		if (!out.Is(RLS::Reloaded))
-		{
-			REKSI_CV_NOTIFY_ALL_AUTO;
-		}
+		REKSI_CV_NOTIFY_ALL_AUTO;
 
 		return out;
 	}
@@ -437,3 +474,4 @@ namespace Reksi
 		return *this;
 	}
 }
+#pragma endregion

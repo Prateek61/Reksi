@@ -26,14 +26,14 @@
 #include <shared_mutex>
 #define REKSI_THREADING_MUTABLE mutable
 using REKSI_MUTEX_T = std::shared_mutex;
-#define REKSI_MUT_IMPL(Mutex) REKSI_MUTEX_T Mutex
+#define REKSI_MUT_IMPL(Mutex) std::shared_mutex Mutex
 #define REKSI_LOCK_SHARED_IMPL(Mutex, Lock) std::shared_lock Lock(Mutex)
 #define REKSI_LOCK_UNIQUE_IMPL(Mutex, Lock) std::unique_lock Lock(Mutex)
 #define REKSI_LOCK_IMPL(Mutex, Lock) std::lock_guard Lock(Mutex)
 // Conditional Variables
 #include <condition_variable>
 using REKSI_CV_T = std::condition_variable_any;
-#define REKSI_CV_IMPL(CV) REKSI_CV_T CV
+#define REKSI_CV_IMPL(CV) std::condition_variable_any CV
 #define REKSI_CV_WAIT_IMPL(CV, Lock, Condition) CV.wait(Lock, Condition)
 #define REKSI_CV_NOTIFY_ONE_IMPL(CV) CV.notify_one()
 #define REKSI_CV_NOTIFY_ALL_IMPL(CV) CV.notify_all()

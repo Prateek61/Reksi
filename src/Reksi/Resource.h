@@ -3,16 +3,9 @@
 #include "Reksi/Base.h"
 #include "Reksi/ResourceData.h"
 
-// Forward Declaring ResourceManager
 namespace Reksi
 {
-	class ResourceManager;
-}
-
-namespace Reksi
-{
-	using ResourceHandleType = uint32_t;
-
+	// Resource class is a wrapper around the ResourceData class, and is returned by the ResourceManager
 	template <typename T>
 	class Resource
 	{
@@ -22,90 +15,162 @@ namespace Reksi
 
 		ResourceStatus GetStatus() const;
 		bool IsLoaded() const;
-		bool IsReloading() const;
+		bool IsValid() const;
 
-		bool Reload();
-		void Load();
-		void Unload();
+		ResourceLoadStatus Load();
+		ResourceUnloadStatus Unload();
+		ResourceLoadStatus Reload();
 
 		std::filesystem::path GetPath() const;
-		ResourceData::LoaderFunc GetLoader() const;
+		ResourceLoadFunc<T> GetLoader() const;
+
+		ResourceManager* GetManager() const;
+		ResourceHandleT GetHandle() const;
+
+		void AddListener(ResourceListener* listener);
+		void RemoveListener(ResourceListener* listener);
+		void ClearListeners();
 
 	private:
-		Resource(ResourceHandleType handle, const SharedPtr<ResourceData>& data);
+		Resource(ResourceHandleT handle, ResourceData* data, ResourceManager* manager);
 
-		ResourceHandleType m_Handle;
-		SharedPtr<ResourceData> m_Data;
+		ResourceHandleT m_Handle;
+		ResourceData* m_Data;
+		ResourceManager* m_Manager;
+
 		friend class ResourceManager;
 	};
 }
 
+
+#pragma region Defer
 // Implementation
+#include "Reksi/ResourceManager.h"
 namespace Reksi
 {
 	template <typename T>
 	SharedPtr<T> Resource<T>::GetRef()
 	{
-		return m_Data->GetData<T>();
+		assert(IsValid());
+
+		auto ref = m_Data->GetData<T>();
+		// If data is valid, return it, else try to get a default resource from the manager
+		if ( ref ) return ref;
+
+		ref = m_Manager->GetDefaultResource<T>();
+		return ref;
 	}
 
 	template <typename T>
 	T& Resource<T>::operator*()
 	{
-		return *m_Data->GetData<T>();
+		return *GetRef();
 	}
 
 	template <typename T>
 	ResourceStatus Resource<T>::GetStatus() const
 	{
+		assert(IsValid());
+
 		return m_Data->GetStatus();
 	}
 
 	template <typename T>
 	bool Resource<T>::IsLoaded() const
 	{
-		return m_Data->IsLoaded();
+		assert(IsValid());
+
+		return m_Data->IsState(ResourceStatus::States::Loaded);
 	}
 
 	template <typename T>
-	bool Resource<T>::IsReloading() const
+	bool Resource<T>::IsValid() const
 	{
-		return m_Data->IsReloading();
+		return this->m_Manager->IsValid(m_Handle);
 	}
 
 	template <typename T>
-	bool Resource<T>::Reload()
+	ResourceLoadStatus Resource<T>::Load()
 	{
-		return m_Data->Reload();
+		assert(IsValid());
+
+		return m_Data->Load();
 	}
 
 	template <typename T>
-	void Resource<T>::Load()
+	ResourceUnloadStatus Resource<T>::Unload()
 	{
-		m_Data->Load();
+		assert(IsValid());
+
+		return m_Data->Unload();
 	}
 
 	template <typename T>
-	void Resource<T>::Unload()
+	ResourceLoadStatus Resource<T>::Reload()
 	{
-		m_Data->Unload();
+		assert(IsValid());
+
+		m_Data->WaitUntilCurrentLoading();
+		return m_Data->Load();
 	}
 
 	template <typename T>
 	std::filesystem::path Resource<T>::GetPath() const
 	{
+		assert(IsValid());
+
 		return m_Data->GetPath();
 	}
 
 	template <typename T>
-	ResourceData::LoaderFunc Resource<T>::GetLoader() const
+	ResourceLoadFunc<T> Resource<T>::GetLoader() const
 	{
-		return m_Data->GetLoader();
+		assert(IsValid());
+
+		return m_Data->GetLoader<T>();
 	}
 
 	template <typename T>
-	Resource<T>::Resource(ResourceHandleType handle, const SharedPtr<ResourceData>& data)
-		: m_Handle(handle), m_Data(data)
+	ResourceManager* Resource<T>::GetManager() const
+	{
+		return m_Manager;
+	}
+
+	template <typename T>
+	ResourceHandleT Resource<T>::GetHandle() const
+	{
+		return m_Handle;
+	}
+
+	template <typename T>
+	void Resource<T>::AddListener(ResourceListener* listener)
+	{
+		assert(IsValid());
+
+		m_Data->AddListener(listener);
+	}
+
+	template <typename T>
+	void Resource<T>::RemoveListener(ResourceListener* listener)
+	{
+		assert(IsValid());
+
+		m_Data->RemoveListener(listener);
+	}
+
+	template <typename T>
+	void Resource<T>::ClearListeners()
+	{
+		assert(IsValid());
+
+		m_Data->ClearListeners();
+	}
+
+	template <typename T>
+	Resource<T>::Resource(ResourceHandleT handle, ResourceData* data, ResourceManager* manager)
+		: m_Handle(handle), m_Data(data), m_Manager(manager)
 	{
 	}
+
 }
+#pragma endregion

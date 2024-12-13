@@ -11,9 +11,10 @@
 
 # Binary files
 **/bin/
-bin-int/
-Intermediates/
 
 # MakeFile
 **/MakeFile
 **.make
+
+assets/
+**/.venv
